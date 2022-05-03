@@ -1,9 +1,12 @@
+import type { CfnBucket } from "aws-cdk-lib/aws-s3";
 import { BlockPublicAccess, Bucket, BucketEncryption, StorageClass } from "aws-cdk-lib/aws-s3";
 import type { Construct as CdkConstruct } from "constructs";
+import { paths } from "traverse";
 import { CfnOutput, Duration, Fn, Stack } from "aws-cdk-lib";
 import type { FromSchema } from "json-schema-to-ts";
 import type { AwsProvider } from "@lift/providers";
 import { AwsConstruct } from "@lift/constructs/abstracts";
+import { get, isEmpty, isObject } from "lodash";
 import { PolicyStatement } from "../../CloudFormation";
 
 const STORAGE_DEFINITION = {
@@ -14,6 +17,7 @@ const STORAGE_DEFINITION = {
         encryption: {
             anyOf: [{ const: "s3" }, { const: "kms" }],
         },
+        extensions: { type: "object" },
     },
     additionalProperties: false,
 } as const;
@@ -21,7 +25,10 @@ const STORAGE_DEFAULTS: Required<FromSchema<typeof STORAGE_DEFINITION>> = {
     type: "storage",
     archive: 45,
     encryption: "s3",
+    extensions: {},
 };
+
+type StorageExtensionsKeys = "bucket";
 
 type Configuration = FromSchema<typeof STORAGE_DEFINITION>;
 
@@ -30,12 +37,15 @@ export class Storage extends AwsConstruct {
     public static schema = STORAGE_DEFINITION;
 
     private readonly bucket: Bucket;
+    // a remplacer par StorageExtensionsKeys
+    private readonly extensions: Record<string, unknown>;
     private readonly bucketNameOutput: CfnOutput;
 
     constructor(scope: CdkConstruct, id: string, configuration: Configuration, private provider: AwsProvider) {
         super(scope, id);
 
         const resolvedConfiguration = Object.assign({}, STORAGE_DEFAULTS, configuration);
+        this.extensions = resolvedConfiguration.extensions;
 
         const encryptionOptions = {
             s3: BucketEncryption.S3_MANAGED,
@@ -65,6 +75,10 @@ export class Storage extends AwsConstruct {
         this.bucketNameOutput = new CfnOutput(this, "BucketName", {
             value: this.bucket.bucketName,
         });
+
+        if (!isEmpty(this.extensions)) {
+            this.extend();
+        }
     }
 
     variables(): Record<string, unknown> {
@@ -87,6 +101,22 @@ export class Storage extends AwsConstruct {
         return {
             bucketName: () => this.getBucketName(),
         };
+    }
+
+    extend(): void {
+        const cfnBucket = this.bucket.node.defaultChild as CfnBucket;
+        const bucketExtensions = this.extensions.bucket;
+        if (isObject(bucketExtensions)) {
+            paths(bucketExtensions)
+                .filter((path) => !isEmpty(path))
+                .map((path) => {
+                    return path.join(".");
+                })
+                .filter((path) => !isObject(get(bucketExtensions, path)))
+                .map((path) => {
+                    cfnBucket.addOverride(path, get(bucketExtensions, path));
+                });
+        }
     }
 
     async getBucketName(): Promise<string | undefined> {

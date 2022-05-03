@@ -10,3 +10,9 @@ constructs:
     kmsEncryption:
         type: storage
         encryption: kms
+    extendedBucket:
+        type: storage
+        extensions:
+            bucket:
+                Properties:
+                    ObjectLockEnabled: True
