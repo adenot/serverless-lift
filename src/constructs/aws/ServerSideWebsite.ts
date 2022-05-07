@@ -37,6 +37,8 @@ const SCHEMA = {
     type: "object",
     properties: {
         type: { const: "server-side-website" },
+        originType: { enum: ["apigw", "alb"] },
+        albLogicalId: { default: "LoadBalancer", type: "string" },
         apiGateway: { enum: ["http", "rest"] },
         assets: {
             type: "object",
@@ -118,7 +120,7 @@ export class ServerSideWebsite extends AwsConstruct {
             comment: `Origin request policy for the ${id} website.`,
             cookieBehavior: OriginRequestCookieBehavior.all(),
             queryStringBehavior: OriginRequestQueryStringBehavior.all(),
-            headerBehavior: this.headersToForward(),
+            headerBehavior: OriginRequestHeaderBehavior.all(),
         });
         const backendCachePolicy = new CachePolicy(this, "BackendCachePolicy", {
             cachePolicyName: `${this.provider.stackName}-${id}`,
@@ -130,11 +132,17 @@ export class ServerSideWebsite extends AwsConstruct {
             headerBehavior: CacheHeaderBehavior.allowList("Authorization"),
         });
 
-        const apiId =
-            configuration.apiGateway === "rest"
-                ? this.provider.naming.getRestApiLogicalId()
-                : this.provider.naming.getHttpApiLogicalId();
-        const apiGatewayDomain = Fn.join(".", [Fn.ref(apiId), `execute-api.${this.provider.region}.amazonaws.com`]);
+        let apiGatewayDomain = "";
+        let albDomain = "";
+        if (configuration.originType === "alb" && configuration.albLogicalId !== undefined) {
+            albDomain = Fn.getAtt(configuration.albLogicalId, "DNSName").toString();
+        } else {
+            const apiId =
+                configuration.apiGateway === "rest"
+                    ? this.provider.naming.getRestApiLogicalId()
+                    : this.provider.naming.getHttpApiLogicalId();
+            apiGatewayDomain = Fn.join(".", [Fn.ref(apiId), `execute-api.${this.provider.region}.amazonaws.com`]);
+        }
 
         // Cast the domains to an array
         this.domains = configuration.domain !== undefined ? flatten([configuration.domain]) : undefined;
@@ -147,7 +155,7 @@ export class ServerSideWebsite extends AwsConstruct {
             comment: `${provider.stackName} ${id} website CDN`,
             defaultBehavior: {
                 // Origins are where CloudFront fetches content
-                origin: new HttpOrigin(apiGatewayDomain, {
+                origin: new HttpOrigin(configuration.originType === "alb" ? albDomain : apiGatewayDomain, {
                     // API Gateway only supports HTTPS
                     protocolPolicy: OriginProtocolPolicy.HTTPS_ONLY,
                 }),
